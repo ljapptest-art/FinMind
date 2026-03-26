@@ -3,6 +3,7 @@ from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from ..extensions import db
 from ..models import Category
+from ..services.webhooks import emit_category_created
 
 bp = Blueprint("categories", __name__)
 logger = logging.getLogger("finmind.categories")
@@ -36,6 +37,8 @@ def create_category():
     db.session.add(c)
     db.session.commit()
     logger.info("Created category id=%s user=%s", c.id, uid)
+    # Emit webhook event
+    emit_category_created(category_id=c.id, user_id=uid, name=c.name)
     return jsonify(id=c.id, name=c.name), 201
 
 

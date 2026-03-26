@@ -123,3 +123,38 @@ CREATE TABLE IF NOT EXISTS audit_logs (
   action VARCHAR(100) NOT NULL,
   created_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
+
+-- Webhook tables
+CREATE TABLE IF NOT EXISTS webhooks (
+  id SERIAL PRIMARY KEY,
+  user_id INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  url VARCHAR(500) NOT NULL,
+  secret VARCHAR(64) NOT NULL,
+  events TEXT NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'active',
+  description VARCHAR(255),
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_webhooks_user ON webhooks(user_id);
+CREATE INDEX IF NOT EXISTS idx_webhooks_status ON webhooks(status);
+
+CREATE TABLE IF NOT EXISTS webhook_deliveries (
+  id SERIAL PRIMARY KEY,
+  webhook_id INT NOT NULL REFERENCES webhooks(id) ON DELETE CASCADE,
+  event_type VARCHAR(50) NOT NULL,
+  payload TEXT NOT NULL,
+  signature VARCHAR(128) NOT NULL,
+  status VARCHAR(20) NOT NULL DEFAULT 'pending',
+  attempt_count INT NOT NULL DEFAULT 0,
+  max_attempts INT NOT NULL DEFAULT 5,
+  next_retry_at TIMESTAMP,
+  last_error TEXT,
+  http_status INT,
+  response_body TEXT,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  delivered_at TIMESTAMP
+);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_webhook ON webhook_deliveries(webhook_id);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_status ON webhook_deliveries(status);
+CREATE INDEX IF NOT EXISTS idx_webhook_deliveries_retry ON webhook_deliveries(status, next_retry_at);

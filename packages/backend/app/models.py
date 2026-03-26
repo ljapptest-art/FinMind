@@ -133,3 +133,73 @@ class AuditLog(db.Model):
     user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=True)
     action = db.Column(db.String(100), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+
+
+# Webhook Event Types
+class WebhookEventType(str, Enum):
+    """Supported webhook event types."""
+    USER_REGISTERED = "user.registered"
+    USER_LOGIN = "user.login"
+    EXPENSE_CREATED = "expense.created"
+    EXPENSE_UPDATED = "expense.updated"
+    EXPENSE_DELETED = "expense.deleted"
+    BILL_CREATED = "bill.created"
+    BILL_PAID = "bill.paid"
+    BILL_DELETED = "bill.deleted"
+    CATEGORY_CREATED = "category.created"
+    RECURRING_EXPENSE_CREATED = "recurring_expense.created"
+
+
+class WebhookStatus(str, Enum):
+    ACTIVE = "active"
+    DISABLED = "disabled"
+
+
+class DeliveryStatus(str, Enum):
+    PENDING = "pending"
+    SUCCESS = "success"
+    FAILED = "failed"
+    RETRYING = "retrying"
+
+
+class Webhook(db.Model):
+    """Stores webhook subscription configuration."""
+    __tablename__ = "webhooks"
+    id = db.Column(db.Integer, primary_key=True)
+    user_id = db.Column(db.Integer, db.ForeignKey("users.id"), nullable=False)
+    url = db.Column(db.String(500), nullable=False)
+    secret = db.Column(db.String(64), nullable=False)  # HMAC secret key
+    events = db.Column(db.Text, nullable=False)  # JSON array of event types
+    status = db.Column(db.String(20), default=WebhookStatus.ACTIVE.value, nullable=False)
+    description = db.Column(db.String(255), nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    updated_at = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+
+    def get_events(self) -> list[str]:
+        """Parse events JSON array."""
+        import json
+        return json.loads(self.events) if self.events else []
+
+    def set_events(self, events: list[str]):
+        """Store events as JSON array."""
+        import json
+        self.events = json.dumps(events)
+
+
+class WebhookDelivery(db.Model):
+    """Tracks individual webhook delivery attempts."""
+    __tablename__ = "webhook_deliveries"
+    id = db.Column(db.Integer, primary_key=True)
+    webhook_id = db.Column(db.Integer, db.ForeignKey("webhooks.id"), nullable=False)
+    event_type = db.Column(db.String(50), nullable=False)
+    payload = db.Column(db.Text, nullable=False)  # JSON payload
+    signature = db.Column(db.String(128), nullable=False)  # HMAC-SHA256 signature
+    status = db.Column(db.String(20), default=DeliveryStatus.PENDING.value, nullable=False)
+    attempt_count = db.Column(db.Integer, default=0, nullable=False)
+    max_attempts = db.Column(db.Integer, default=5, nullable=False)
+    next_retry_at = db.Column(db.DateTime, nullable=True)
+    last_error = db.Column(db.Text, nullable=True)
+    http_status = db.Column(db.Integer, nullable=True)
+    response_body = db.Column(db.Text, nullable=True)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
+    delivered_at = db.Column(db.DateTime, nullable=True)

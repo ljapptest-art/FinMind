@@ -4,6 +4,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from ..extensions import db
 from ..models import Bill, BillCadence, User
 from ..services.cache import cache_delete_patterns
+from ..services.webhooks import emit_bill_created, emit_bill_paid, emit_bill_deleted
 import logging
 
 bp = Blueprint("bills", __name__)
@@ -62,6 +63,16 @@ def create_bill():
     cache_delete_patterns(
         [f"user:{uid}:upcoming_bills*", f"user:{uid}:dashboard_summary:*"]
     )
+    # Emit webhook event
+    emit_bill_created(
+        bill_id=b.id,
+        user_id=uid,
+        name=b.name,
+        amount=float(b.amount),
+        currency=b.currency,
+        next_due_date=b.next_due_date.isoformat(),
+        cadence=b.cadence.value
+    )
     return jsonify(id=b.id), 201
 
 
@@ -73,12 +84,16 @@ def mark_paid(bill_id: int):
     if not b or b.user_id != uid:
         return jsonify(error="not found"), 404
     # Move next due date based on cadence
+    next_due = None
     if b.cadence == BillCadence.MONTHLY:
-        b.next_due_date = b.next_due_date + timedelta(days=30)
+        next_due = b.next_due_date + timedelta(days=30)
+        b.next_due_date = next_due
     elif b.cadence == BillCadence.WEEKLY:
-        b.next_due_date = b.next_due_date + timedelta(days=7)
+        next_due = b.next_due_date + timedelta(days=7)
+        b.next_due_date = next_due
     elif b.cadence == BillCadence.YEARLY:
-        b.next_due_date = b.next_due_date + timedelta(days=365)
+        next_due = b.next_due_date + timedelta(days=365)
+        b.next_due_date = next_due
     else:
         b.active = False
     db.session.commit()
@@ -87,5 +102,13 @@ def mark_paid(bill_id: int):
     )
     logger.info(
         "Marked bill paid id=%s user=%s next_due_date=%s", b.id, uid, b.next_due_date
+    )
+    # Emit webhook event
+    emit_bill_paid(
+        bill_id=b.id,
+        user_id=uid,
+        name=b.name,
+        amount=float(b.amount),
+        next_due_date=next_due.isoformat() if next_due else None
     )
     return jsonify(message="updated")

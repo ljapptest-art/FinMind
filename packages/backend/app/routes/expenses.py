@@ -8,6 +8,12 @@ from ..extensions import db
 from ..models import Expense, RecurringCadence, RecurringExpense, User
 from ..services.cache import cache_delete_patterns, monthly_summary_key
 from ..services import expense_import
+from ..services.webhooks import (
+    emit_expense_created,
+    emit_expense_updated,
+    emit_expense_deleted,
+    emit_recurring_expense_created,
+)
 import logging
 
 bp = Blueprint("expenses", __name__)
@@ -84,6 +90,17 @@ def create_expense():
             f"insights:{uid}:*",
         ]
     )
+    # Emit webhook event
+    emit_expense_created(
+        expense_id=e.id,
+        user_id=uid,
+        amount=float(e.amount),
+        currency=e.currency,
+        description=e.notes or "",
+        category_id=e.category_id,
+        date=e.spent_at.isoformat(),
+        expense_type=e.expense_type
+    )
     return jsonify(_expense_to_dict(e)), 201
 
 
@@ -143,6 +160,16 @@ def create_recurring_expense():
     )
     db.session.add(recurring)
     db.session.commit()
+    # Emit webhook event
+    emit_recurring_expense_created(
+        recurring_id=recurring.id,
+        user_id=uid,
+        amount=float(recurring.amount),
+        cadence=recurring.cadence.value,
+        description=recurring.notes,
+        start_date=recurring.start_date.isoformat(),
+        end_date=recurring.end_date.isoformat() if recurring.end_date else None
+    )
     return jsonify(_recurring_to_dict(recurring)), 201
 
 
@@ -210,27 +237,41 @@ def update_expense(expense_id: int):
     if not e or e.user_id != uid:
         return jsonify(error="not found"), 404
     data = request.get_json() or {}
+    changes = {}
     if "amount" in data:
         amount = _parse_amount(data.get("amount"))
         if amount is None:
             return jsonify(error="invalid amount"), 400
+        changes["amount"] = {"old": float(e.amount), "new": float(amount)}
         e.amount = amount
     if "currency" in data:
+        changes["currency"] = {"old": e.currency, "new": str(data.get("currency") or "USD")[:10]}
         e.currency = str(data.get("currency") or "USD")[:10]
     if "expense_type" in data:
+        changes["expense_type"] = {"old": e.expense_type, "new": str(data.get("expense_type") or "EXPENSE").upper()}
         e.expense_type = str(data.get("expense_type") or "EXPENSE").upper()
     if "category_id" in data:
+        changes["category_id"] = {"old": e.category_id, "new": data.get("category_id")}
         e.category_id = data.get("category_id")
     if "description" in data or "notes" in data:
         description = (data.get("description") or data.get("notes") or "").strip()
         if not description:
             return jsonify(error="description required"), 400
+        changes["description"] = {"old": e.notes, "new": description}
         e.notes = description
     if "date" in data or "spent_at" in data:
         raw_date = data.get("date") or data.get("spent_at")
+        changes["date"] = {"old": e.spent_at.isoformat(), "new": raw_date}
         e.spent_at = date.fromisoformat(raw_date)
     db.session.commit()
     _invalidate_expense_cache(uid, e.spent_at.isoformat())
+    # Emit webhook event if there were changes
+    if changes:
+        emit_expense_updated(
+            expense_id=e.id,
+            user_id=uid,
+            changes=changes
+        )
     return jsonify(_expense_to_dict(e))
 
 
@@ -242,6 +283,8 @@ def delete_expense(expense_id: int):
     if not e or e.user_id != uid:
         return jsonify(error="not found"), 404
     spent_at = e.spent_at.isoformat()
+    # Emit webhook event before deletion
+    emit_expense_deleted(expense_id=e.id, user_id=uid)
     db.session.delete(e)
     db.session.commit()
     _invalidate_expense_cache(uid, spent_at)

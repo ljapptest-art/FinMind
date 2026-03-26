@@ -10,6 +10,7 @@ from flask_jwt_extended import (
 )
 from ..extensions import db, redis_client
 from ..models import User
+from ..services.webhooks import emit_user_registered, emit_user_login
 import logging
 import time
 
@@ -47,6 +48,8 @@ def register():
     db.session.add(user)
     db.session.commit()
     logger.info("Registered user id=%s email=%s", user.id, email)
+    # Emit webhook event
+    emit_user_registered(user_id=user.id, email=email)
     return jsonify(message="registered"), 201
 
 
@@ -63,6 +66,8 @@ def login():
     refresh = create_refresh_token(identity=str(user.id))
     _store_refresh_session(refresh, str(user.id))
     logger.info("Login success user_id=%s", user.id)
+    # Emit webhook event
+    emit_user_login(user_id=user.id, email=user.email)
     return jsonify(access_token=access, refresh_token=refresh)
 
 

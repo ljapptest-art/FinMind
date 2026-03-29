@@ -240,6 +240,30 @@ class TestLoginAnomalyDetector:
             assert result.is_anomaly is True
             assert result.anomaly_type == LoginAnomalyType.MULTIPLE_FAILURES
     
+    def test_check_suspicious_ip_private(self, app, detector_instance):
+        """Test that private IPs are flagged as suspicious."""
+        with app.app_context():
+            context = LoginContext(
+                user_id=None,
+                email="test@example.com",
+                ip_address="192.168.1.1",
+            )
+            result = detector_instance.check_suspicious_ip(context)
+            assert result.is_anomaly is True
+            assert result.anomaly_type == LoginAnomalyType.SUSPICIOUS_IP
+            assert result.details["reason"] == "private_or_internal_ip"
+    
+    def test_check_suspicious_ip_public(self, app, detector_instance):
+        """Test that public IPs are not flagged as suspicious."""
+        with app.app_context():
+            context = LoginContext(
+                user_id=None,
+                email="test@example.com",
+                ip_address="8.8.8.8",  # Google's public DNS
+            )
+            result = detector_instance.check_suspicious_ip(context)
+            assert result.is_anomaly is False
+    
     def test_process_login_success(self, app, detector_instance):
         with app.app_context():
             user = User(email="test@example.com", password_hash="hash")
@@ -248,14 +272,14 @@ class TestLoginAnomalyDetector:
             context = LoginContext(
                 user_id=user.id,
                 email="test@example.com",
-                ip_address="192.168.1.1",
+                ip_address="8.8.8.8",  # Use public IP to avoid SUSPICIOUS_IP detection
                 user_agent="Test Agent",
             )
             attempt, anomalies = detector_instance.process_login(context, success=True)
             db.session.commit()
             assert attempt.id is not None
             assert attempt.success is True
-            assert len(anomalies) == 1
+            assert len(anomalies) == 1  # Only new_device, no suspicious_ip for public IP
             device = db.session.query(UserDevice).filter(
                 UserDevice.user_id == user.id
             ).first()

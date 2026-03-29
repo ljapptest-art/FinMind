@@ -231,6 +231,62 @@ class LoginAnomalyDetector:
         
         return AnomalyResult(is_anomaly=False)
     
+    # Known suspicious IP patterns
+    SUSPICIOUS_IP_PATTERNS = [
+        "10.",       # Private IP (should not appear in production)
+        "192.168.",  # Private IP
+        "127.",      # Localhost (suspicious for remote login)
+        "0.0.0.0",   # Invalid
+    ]
+    
+    # Known VPN/Proxy/Tor exit node indicators (can be expanded)
+    TOR_EXIT_NODE_INDICATORS = []  # Would be populated from external source
+    
+    def check_suspicious_ip(self, context: LoginContext) -> AnomalyResult:
+        """
+        Check if the IP address is suspicious.
+        
+        Detects:
+        - Private/internal IPs (should not appear in production login)
+        - Known Tor exit nodes (if data available)
+        - VPN/Proxy indicators (if data available)
+        - IP from high-risk country (placeholder for Geo-IP risk scoring)
+        """
+        if not context.ip_address:
+            return AnomalyResult(is_anomaly=False)
+        
+        ip = context.ip_address
+        
+        # Check for private/internal IPs (suspicious for production)
+        for pattern in self.SUSPICIOUS_IP_PATTERNS:
+            if ip.startswith(pattern):
+                return AnomalyResult(
+                    is_anomaly=True,
+                    anomaly_type=LoginAnomalyType.SUSPICIOUS_IP,
+                    severity="high",
+                    details={
+                        "ip_address": ip,
+                        "reason": "private_or_internal_ip",
+                        "pattern_matched": pattern,
+                    }
+                )
+        
+        # Check for high-risk countries (if geo data available)
+        HIGH_RISK_COUNTRIES = []  # Placeholder: would be from threat intelligence
+        if context.country and context.country in HIGH_RISK_COUNTRIES:
+            return AnomalyResult(
+                is_anomaly=True,
+                anomaly_type=LoginAnomalyType.SUSPICIOUS_IP,
+                severity="medium",
+                details={
+                    "ip_address": ip,
+                    "country": context.country,
+                    "reason": "high_risk_country",
+                }
+            )
+        
+        return AnomalyResult(is_anomaly=False)
+    
     def run_all_checks(
         self,
         context: LoginContext,
@@ -257,6 +313,11 @@ class LoginAnomalyDetector:
             time_anomaly = self.check_unusual_time(context)
             if time_anomaly.is_anomaly:
                 anomalies.append(time_anomaly)
+            
+            # Check for suspicious IP (for both success and failure)
+            ip_anomaly = self.check_suspicious_ip(context)
+            if ip_anomaly.is_anomaly:
+                anomalies.append(ip_anomaly)
         
         return anomalies
     
@@ -381,6 +442,47 @@ def get_client_ip(request) -> str:
     return request.remote_addr or '0.0.0.0'
 
 
+def get_geo_from_ip(ip_address: str) -> dict:
+    """
+    Get geographic information from IP address.
+    
+    Uses ip-api.com (free tier, no API key required, 45 requests/min limit).
+    For production, consider using MaxMind GeoIP2 or similar paid service.
+    
+    Returns: {"country": str, "city": str} or empty dict on failure.
+    """
+    if not ip_address:
+        return {}
+    
+    # Skip private/internal IPs
+    PRIVATE_IP_PREFIXES = ("10.", "192.168.", "172.16.", "172.17.", "172.18.", 
+                           "172.19.", "172.20.", "172.21.", "172.22.", "172.23.",
+                           "172.24.", "172.25.", "172.26.", "172.27.", "172.28.",
+                           "172.29.", "172.30.", "172.31.", "127.", "169.254.", "::1")
+    if ip_address.startswith(PRIVATE_IP_PREFIXES):
+        return {"country": None, "city": None}
+    
+    try:
+        import requests
+        response = requests.get(
+            f"http://ip-api.com/json/{ip_address}",
+            timeout=2.0,
+            params={"fields": "status,countryCode,city"}
+        )
+        
+        if response.status_code == 200:
+            data = response.json()
+            if data.get("status") == "success":
+                return {
+                    "country": data.get("countryCode"),
+                    "city": data.get("city"),
+                }
+    except Exception as e:
+        logger.debug(f"Geo-IP lookup failed for {ip_address}: {e}")
+    
+    return {}
+
+
 def get_login_context(request, user_id: Optional[int], email: str) -> LoginContext:
     """Build LoginContext from Flask request."""
     user_agent = request.headers.get('User-Agent', '')[:500]  # Truncate to fit column
@@ -389,12 +491,15 @@ def get_login_context(request, user_id: Optional[int], email: str) -> LoginConte
     # Generate device fingerprint
     device_fingerprint = detector.detect_device_fingerprint(user_agent, ip_address)
     
+    # Get geo information from IP
+    geo = get_geo_from_ip(ip_address)
+    
     return LoginContext(
         user_id=user_id,
         email=email,
         ip_address=ip_address,
         user_agent=user_agent,
         device_fingerprint=device_fingerprint,
-        country=None,  # Would need GeoIP service
-        city=None,
+        country=geo.get("country"),
+        city=geo.get("city"),
     )
